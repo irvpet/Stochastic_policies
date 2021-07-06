@@ -1,0 +1,260 @@
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.distributions.normal import Normal
+import matplotlib.pyplot as plt
+import argparse
+from tqdm import tqdm
+
+
+def get_args():
+    """ Parse all arguments """
+    parser = argparse.ArgumentParser(description='Simplest reward expectation maximizer')
+    parser.add_argument('--lr', default=1e-2, help='Learning rate')
+    parser.add_argument('--nepisodes', default=3000, help='Number of epochs')
+    parser.add_argument('--ep_length', default=10, help='Number of epochs')
+    parser.add_argument('--gamma', default=0.9, help='Number of epochs')
+    parser.add_argument('--fixed_variance', default=False, help='Toogle')
+    parser.add_argument('--sig2', default=0.1, help='Fixed variance')
+    args = parser.parse_args()
+
+    return args
+
+
+def mean_only():
+    args = get_args()
+
+    x_pth = torch.tensor([2., 2.])
+    model = nn.Sequential(nn.Linear(in_features=2, out_features=1))
+
+    print(model.state_dict())
+    model.state_dict()['0.weight'][:] = torch.Tensor([[1., 1.]])
+    model.state_dict()['0.bias'][:] = torch.Tensor([[1.]])
+    print(model.state_dict())
+
+    optimizer = optim.Adam(params=model.parameters(), lr=1e-2)
+
+    mu = model(x_pth)
+    sigma2 = torch.Tensor([[0.1]])
+    target = torch.Tensor([[10.]])
+
+    log_start_pt = mu.item()
+
+    norm_dist = Normal(mu, sigma2)
+    norm_sample = norm_dist.sample()
+    norm_sample_logprob = norm_dist.log_prob(norm_sample)
+
+    last_distance = target - norm_sample
+
+    def get_reward(norm_sample, last_distance):
+        new_distance = (target - norm_sample)**2
+        if new_distance < last_distance:
+            reward = torch.Tensor([+1.])
+        else:
+            reward = torch.Tensor([-1.])
+
+
+        return new_distance, reward
+
+    distance_history = []
+    loss_history = []
+    mu_history = []
+    sig2_history = []
+    for ep in tqdm(range(args.nepisodes)):
+        sampling = []
+        reward_buffer = []
+        acs_logprob = []
+
+
+        mu = model(x_pth)
+        norm_dist = Normal(mu, sigma2)
+        mu_history.append(mu.item())
+        sig2_history.append(sigma2.item())
+
+        for i in range(args.ep_length):
+            norm_sample = norm_dist.sample()
+            last_distance, reward = get_reward(norm_sample, last_distance)
+            distance_history.append(last_distance.item())
+            sampling.append(norm_sample.item())
+            reward_buffer.append(reward)
+            acs_logprob.append(norm_dist.log_prob(norm_sample))
+
+        G = []
+
+        for t in range(args.ep_length):
+            G_sum = 0
+            discount = 1
+            for k in range(t, args.ep_length):
+                G_sum += reward_buffer[k] * discount
+                discount *= args.gamma
+            G.append(G_sum)
+
+        optimizer.zero_grad()
+
+        loss = 0
+        for g, logp in zip(G, acs_logprob):
+            loss += -g*logp
+
+        loss_history.append(loss.item())
+
+        loss.backward()
+        optimizer.step()
+
+    print(model.state_dict())
+
+    print(f'model output = {model(x_pth)}')
+
+    fig, ax = plt.subplots(2, 3, figsize=(16, 8))
+    fig.suptitle(f'Loss history \n Starting pt={log_start_pt}, Target={target.item()}', fontsize=12)
+    ax[0, 0].plot(distance_history)
+    ax[0, 0].set_ylabel(f'Distance history')
+    ax[1, 0].plot(distance_history)
+    ax[1, 0].set_ylabel(f'Distance history')
+    ax[1, 0].set_xlabel(f'Number of updates')
+    ax[1, 0].set_yscale('log')
+
+    ax[0, 1].plot(loss_history)
+    ax[0, 1].set_ylabel(f'Loss history')
+    ax[1, 1].plot(loss_history)
+    ax[1, 1].set_ylabel(f'Loss history')
+    ax[1, 1].set_xlabel(f'Episodes')
+    ax[1, 1].set_yscale('log')
+
+    ax[0, 2].plot(mu_history, label='mu')
+    ax[0, 2].plot(sig2_history, label='sig2')
+    ax[0, 2].set_ylabel(f'mu/sig2')
+    ax[0, 2].set_xlabel(f'Episodes')
+    ax[0, 2].legend()
+    ax[1, 2].plot(mu_history, label='mu')
+    ax[1, 2].plot(sig2_history, label='sig2')
+    ax[1, 2].set_ylabel(f'mu/sig2')
+    ax[1, 2].set_xlabel(f'Episodes')
+    ax[1, 2].set_yscale('log')
+    ax[1, 2].legend()
+
+    plt.show()
+
+
+def mean_var():
+    args = get_args()
+    EPSILON = 1e-8
+    x_pth = torch.tensor([[2., 2.]])
+    model = nn.Sequential(nn.Linear(in_features=2, out_features=2))
+
+    print(model.state_dict())
+    model.state_dict()['0.weight'][:] = torch.Tensor([[1., 1.],[1., 1.]])
+    model.state_dict()['0.bias'][:] = torch.Tensor([[1., 1.]])
+    print(model.state_dict())
+
+    optimizer = optim.Adam(params=model.parameters(), lr=1e-2)
+
+    mu_sig2 = model(x_pth)
+    mu_hist = []
+    sig2_hist = []
+    adjsig2_hist = []
+
+    target = torch.Tensor([[10.]])
+
+    log_start_pt = mu_sig2[0, 0].item()
+
+    norm_dist = Normal(mu_sig2[0, 0], mu_sig2[0, 1]**2+EPSILON)
+    norm_sample = norm_dist.sample()
+    norm_sample_logprob = norm_dist.log_prob(norm_sample)
+
+    last_distance = target - norm_sample
+
+    def get_reward(norm_sample, last_distance):
+        new_distance = (target - norm_sample)**2
+        if new_distance < last_distance:
+            reward = torch.Tensor([+1.])
+        else:
+            reward = torch.Tensor([-1.])
+
+        return new_distance, reward
+
+    distance_history = []
+    loss_history = []
+    for ep in tqdm(range(args.nepisodes)):
+        sampling = []
+        reward_buffer = []
+        acs_logprob = []
+
+        mu_sig2 = model(x_pth)
+        norm_dist = Normal(mu_sig2[0, 0], mu_sig2[0, 1]**2+EPSILON)
+        mu_hist.append(mu_sig2[0,0].item())
+        sig2_hist.append(mu_sig2[0, 1].item())
+        adjsig2_hist.append(mu_sig2[0, 1].item()**2+1)
+
+        for i in range(args.ep_length):
+            norm_sample = norm_dist.sample()
+            last_distance, reward = get_reward(norm_sample, last_distance)
+            distance_history.append(last_distance.item())
+            sampling.append(norm_sample.item())
+            reward_buffer.append(reward)
+            acs_logprob.append(norm_dist.log_prob(norm_sample))
+
+
+
+        G = []
+
+        for t in range(args.ep_length):
+            G_sum = 0
+            discount = 1
+            for k in range(t, args.ep_length):
+                G_sum += reward_buffer[k] * discount
+                discount *= args.gamma
+            G.append(G_sum)
+
+        optimizer.zero_grad()
+
+        loss = 0
+        for g, logp in zip(G, acs_logprob):
+            loss += -g*logp
+
+        loss_history.append(loss.item())
+
+        loss.backward()
+        optimizer.step()
+
+
+    print(f'model output = {model(x_pth)}')
+
+    fig, ax = plt.subplots(2, 3, figsize=(16, 8))
+    fig.suptitle(f'Loss history \n Starting pt={log_start_pt}, Target={target.item()}', fontsize=12)
+    ax[0, 0].plot(distance_history)
+    ax[0, 0].set_ylabel(f'Distance history')
+    ax[0, 0].set_xlabel(f'Number of updates')
+    ax[1, 0].plot(distance_history)
+    ax[1, 0].set_ylabel(f'Distance history')
+    ax[1, 0].set_xlabel(f'Number of updates')
+    ax[1, 0].set_yscale('log')
+
+    ax[0, 1].plot(loss_history)
+    ax[0, 1].set_ylabel(f'Loss history')
+    ax[0, 1].set_xlabel(f'Episodes')
+    ax[1, 1].plot(loss_history)
+    ax[1, 1].set_ylabel(f'Loss history')
+    ax[1, 1].set_xlabel(f'Episodes')
+    ax[1, 1].set_yscale('log')
+
+    ax[0, 2].plot(mu_hist, label='mu')
+    ax[0, 2].plot(sig2_hist, label='NN output')
+    ax[0, 2].plot(adjsig2_hist, label='out**2 + EPSILON')
+    ax[0, 2].set_ylabel(f'mu/sigma')
+    ax[0, 2].set_xlabel(f'Episodes')
+    ax[0, 2].legend()
+    ax[1, 2].plot(mu_hist, label='mu')
+    ax[1, 2].plot(sig2_hist, label='NN output')
+    ax[1, 2].plot(adjsig2_hist, label='out**2 + EPSILON')
+    ax[1, 2].set_ylabel(f'mu/sigma')
+    ax[1, 2].set_xlabel(f'Episodes')
+    ax[1, 2].set_yscale('log')
+    ax[1, 2].legend()
+
+    plt.show()
+
+
+if __name__ == '__main__':
+    mean_only()
+    #mean_var()
+
